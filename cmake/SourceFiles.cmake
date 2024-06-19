@@ -8,6 +8,7 @@ set(SOURCE_FILES
         src/arcadia.cpp
         src/audio.cpp
         src/autoconf.cpp
+        src/barto_gdbserver.cpp
         src/blitfunc.cpp
         src/blittable.cpp
         src/blitter.cpp

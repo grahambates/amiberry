@@ -252,7 +252,7 @@ static const TCHAR *lacer[] = { _T("off"), _T("i"), _T("p"), nullptr };
 static const TCHAR *cycleexact[] = { _T("false"), _T("memory"), _T("true"), nullptr  };
 static const TCHAR *unmapped[] = { _T("floating"), _T("zero"), _T("one"), nullptr };
 static const TCHAR *ciatype[] = { _T("default"), _T("391078-01"), nullptr };
-static const TCHAR *debugfeatures[] = { _T("segtracker"), _T("fsdebug"), nullptr };
+static const TCHAR *debugfeatures[] = { _T("segtracker"), _T("fsdebug"), _T("gdbserver") /*BARTO*/, 0 };
 static const TCHAR *hvcsync[] = { _T("hvcsync"), _T("csync"), _T("hvsync"), nullptr };
 static const TCHAR *eclocksync[] = { _T("default"), _T("68000"), _T("Gayle"), _T("68000_opt"), nullptr };
 static const TCHAR *agnusmodel[] = { _T("default"), _T("velvet"), _T("a1000"), _T("ocs"), _T("ecs"), _T("aga"), nullptr };
@@ -5911,6 +5911,8 @@ static int cfgfile_parse_hardware (struct uae_prefs *p, const TCHAR *option, TCH
 		return 1;
 	if (cfgfile_string(option, value, _T("jit_blacklist"), p->jitblacklist, sizeof p->jitblacklist / sizeof(TCHAR)))
 		return 1;
+	if (cfgfile_string(option, value, _T("debugging_trigger"), p->debugging_trigger, sizeof p->debugging_trigger / sizeof(TCHAR)))
+		return 1;
 
 	if (cfgfile_yesno(option, value, _T("denise_noehb"), &dummybool)) {
 		if (dummybool) {
@@ -8962,6 +8964,7 @@ static void buildin_default_prefs (struct uae_prefs *p)
 	p->mountitems = 0;
 
 	p->debug_mem = false;
+	_tcscpy(p->debugging_trigger, _T(":runme.exe"));
 
 	target_default_options (p, 1);
 	cfgfile_compatibility_romtype(p);
