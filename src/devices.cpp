@@ -80,6 +80,7 @@
 #ifdef WITH_DSP
 #include "dsp3210/dsp_glue.h"
 #endif
+#include "barto_gdbserver.h"
 
 #define MAX_DEVICE_ITEMS 64
 
@@ -275,10 +276,12 @@ void devices_vsync_pre(void)
 	statusline_vsync();
 
 	execute_device_items(device_vsyncs_pre, device_vsync_pre_cnt);
+	barto_gdbserver::vsync_pre(); // BARTO
 }
 
 void devices_vsync_post(void)
 {
+	barto_gdbserver::vsync_post(); // BARTO
 	execute_device_items(device_vsyncs_post, device_vsync_post_cnt);
 }
 
@@ -355,6 +358,7 @@ void virtualdevice_free(void)
 	inputdevice_close();
 	DISK_free();
 	//dump_counts();
+	barto_gdbserver::close();
 #ifdef SERIAL_PORT
 	serial_exit();
 #endif
@@ -439,6 +443,7 @@ void virtualdevice_init (void)
 #ifdef WITH_DRACO
 	draco_init();
 #endif
+	barto_gdbserver::init(); // BARTO
 }
 
 void devices_restore_start(void)

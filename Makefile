@@ -413,6 +413,7 @@ OBJS = \
 	src/arcadia.o \
 	src/audio.o \
 	src/autoconf.o \
+	src/barto_gdbserver.o \
 	src/blitfunc.o \
 	src/blittable.o \
 	src/blitter.o \
