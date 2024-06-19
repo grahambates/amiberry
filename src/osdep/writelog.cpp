@@ -42,6 +42,30 @@ static HWND previousactivewindow;
 
 #define WRITE_LOG_BUF_SIZE 4096
 
+// Store output written to console so we can return it from remote debugger
+char capture_buffer[1024 * 32];
+bool capturing = false;
+char *capture_p;
+
+void capture_start() {
+	memset(capture_buffer, 0, 1);
+	capturing = true;
+	capture_p = capture_buffer;
+}
+
+void capture_write(const TCHAR *txt) {
+	if (capturing) {
+		int len = strlen(txt);
+		strncpy(capture_p, txt, len);
+		capture_p += len;
+	}
+}
+
+TCHAR *capture_end() {
+	capturing = false;
+	return capture_buffer;
+}
+
 /* console functions for debugger */
 
 bool is_console_open()
@@ -320,6 +344,7 @@ TCHAR *setconsolemode (TCHAR *buffer, const int maxlen)
 
 static void console_put (const TCHAR *buffer)
 {
+	capture_write(buffer);
 	if (console_buffer) {
 		if (_tcslen (console_buffer) + _tcslen (buffer) < console_buffer_size)
 			_tcscat (console_buffer, buffer);
@@ -483,6 +508,9 @@ TCHAR* write_log_get_ts(void)
 	return out;
 }
 
+// BARTO
+namespace barto_gdbserver { void log_output(const TCHAR* string); }
+
 void write_log(const char* format, ...)
 {
 	int count;
@@ -490,6 +518,9 @@ void write_log(const char* format, ...)
 	int bufsize = WRITE_LOG_BUF_SIZE;
 	TCHAR* bufp;
 	va_list parms;
+
+	if (!SHOW_CONSOLE && !console_logging && !debugfile && !(currprefs.debugging_features & (1 << 2))) // BARTO "gdbserver"
+		return;
 
 	if (!amiberry_options.write_logfile && !console_logging && !debugfile)
 		return;
@@ -526,6 +557,11 @@ void write_log(const char* format, ...)
 			fprintf(debugfile, _T("%s"), ts);
 		fprintf(debugfile, _T("%s"), bufp);
 	}
+
+	// BARTO
+	if (currprefs.debugging_features & (1 << 2))
+		barto_gdbserver::log_output(bufp);
+
 	lfdetected = 0;
 	if (bufp[0] != '\0' && bufp[_tcslen(bufp) - 1] == '\n')
 		lfdetected = 1;
