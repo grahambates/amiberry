@@ -468,7 +468,7 @@ uae_u32 get_ilong_debug (uaecptr addr)
 	}
 }
 
-static uae_u8 *get_real_address_debug(uaecptr addr)
+/*static*/ uae_u8 *get_real_address_debug(uaecptr addr) // BARTO
 {
 	if (debug_mmu_mode) {
 		flagtype olds = regs.s;
