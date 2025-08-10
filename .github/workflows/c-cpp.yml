@@ -478,7 +478,7 @@ jobs:
                 file \
                 binutils
               
-              echo "=== Installing core media libraries ==="
+              echo "=== Installing libraries (dev packages) ==="
               apk add --no-cache \
                 flac-dev \
                 libpng-dev \
@@ -488,6 +488,13 @@ jobs:
                 alsa-lib-dev \
                 mpg123-dev \
                 zstd-dev
+              
+              echo "=== Installing available static packages ==="
+              # Only install static packages that actually exist
+              apk add --no-cache \
+                libpng-static \
+                zstd-static \
+                || echo "Some static packages not available"
               
               echo "=== Applying musl compatibility fixes ==="
               cd /workspace
@@ -499,11 +506,11 @@ jobs:
                 sed "s/struct ucontext_t/ucontext_t/g" src/jit/x86/exception_handler.cpp.bak > src/jit/x86/exception_handler.cpp
               fi
               
-              echo "=== Configuring with musl compatibility flags ==="
+              echo "=== Configuring with mixed static/dynamic linking ==="
               cmake -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
-                -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
+                -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++" \
+                -DCMAKE_FIND_LIBRARY_SUFFIXES=".a;.so" \
                 -DBUILD_SHARED_LIBS=OFF \
                 -DCMAKE_CXX_FLAGS="-D_GNU_SOURCE -Dfseeko64=fseeko -Dftello64=ftello -D_LARGEFILE64_SOURCE" \
                 -DCMAKE_C_FLAGS="-D_GNU_SOURCE -Dfseeko64=fseeko -Dftello64=ftello -D_LARGEFILE64_SOURCE" \
@@ -539,6 +546,9 @@ jobs:
               echo "=== Binary info ==="
               ls -lh package/bin/amiberry
               file package/bin/amiberry
+              
+              echo "=== Dependencies check ==="
+              ldd package/bin/amiberry || echo "No dynamic dependencies (fully static)"
             '
 
       - name: Upload artifact
