@@ -1,0 +1,182 @@
+name: Portable builds
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+env:
+  CMAKE_BUILD_ARGS: >-
+    -DCMAKE_INSTALL_PREFIX=/usr
+    -DUSE_LIBSERIALPORT=OFF
+    -DUSE_LIBENET=OFF
+    -DUSE_PORTMIDI=OFF
+    -DUSE_LIBMPEG2=OFF
+    -DUSE_UAENET_PCAP=OFF
+
+jobs:
+  build-macos:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-13
+            arch: x86_64
+            artifact: amiberry-macos-x86_64
+          - runner: macos-latest
+            arch: apple-silicon
+            artifact: amiberry-macos-aarch64
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Cache Homebrew
+        if: matrix.arch == 'x86_64'
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/Homebrew
+          key: ${{ runner.os }}-brew-${{ hashFiles('Brewfile') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-
+
+      - name: Fix homebrew in Github Runner (x86_64 only)
+        if: matrix.arch == 'x86_64'
+        run: |
+          for f in $(find /usr/local/bin -type l -print); do
+            (readlink $f | grep -q -s "/Library") && echo "Removing $f" && rm -f "$f"
+          done || exit 0
+
+      - name: Install dependencies
+        run: |
+          brew update
+          if [ -f Brewfile ]; then
+            brew bundle
+          else
+            brew install sdl2 mpg123 sdl2_ttf sdl2_image flac libmpeg2 libserialport portmidi enet libpcap zstd dylibbundler
+          fi
+
+      - name: Build for macOS
+        run: |
+          cmake -B build ${{ env.CMAKE_BUILD_ARGS }}
+          cmake --build build -j$(nproc)
+
+      - name: Create DMG package
+        run: cpack -G DragNDrop --config build/CPackConfig.cmake
+
+      - name: Create ZIP package
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            zip -r "amiberry-${{ github.ref_name }}-macos-${{ matrix.arch }}.zip" Amiberry-*.dmg
+          else
+            zip -r "amiberry-${{ github.sha }}-macos-${{ matrix.arch }}.zip" Amiberry-*.dmg
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: amiberry-*.zip
+
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            name: x86_64
+          - arch: arm64
+            platform: linux/arm64
+            name: aarch64
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build portable package
+        run: |
+          docker run --rm \
+            --platform ${{ matrix.platform }} \
+            -v $PWD:/workspace \
+            -w /workspace \
+            ubuntu:20.04 \
+            bash -c '
+              set -euo pipefail
+              
+              echo "=== Installing build tools ==="
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq \
+                build-essential \
+                cmake \
+                ninja-build \
+                git \
+                file \
+                patchelf \
+                libflac-dev \
+                libpng-dev \
+                libsdl2-dev \
+                libsdl2-ttf-dev \
+                libsdl2-image-dev \
+                libasound2-dev \
+                libmpg123-dev \
+                libzstd-dev
+              
+              echo "=== Building ==="
+              cmake -B build -G Ninja ${{ env.CMAKE_BUILD_ARGS }}
+              cmake --build build -j$(nproc)
+              
+              echo "=== Creating portable package ==="
+              mkdir -p package/{bin,lib}
+              cp build/amiberry package/bin/
+              
+              echo "=== Bundling shared libraries ==="
+              # Get non-system libraries
+              ldd build/amiberry | \
+                awk "/=> \// {print \$3}" | \
+                grep -v -E "^/(lib|usr/lib)/(x86_64-linux-gnu/)?(ld-|libc\.|libm\.|libdl\.|libpthread\.|libresolv\.)" | \
+                while read -r lib; do
+                  if [ -f "$lib" ]; then
+                    echo "Copying $(basename "$lib")"
+                    cp "$lib" package/lib/
+                  fi
+                done
+              
+              echo "=== Setting up portable execution ==="
+              patchelf --set-rpath "\$ORIGIN/../lib" package/bin/amiberry
+              
+              # Create launcher script
+              cat > package/amiberry << '"'"'EOF'"'"'
+          #!/bin/bash
+          DIR="$(dirname "$(readlink -f "$0")")"
+          export LD_LIBRARY_PATH="$DIR/lib:$LD_LIBRARY_PATH"
+          exec "$DIR/bin/amiberry" "$@"
+          EOF
+              chmod +x package/amiberry
+              
+              echo "=== Package verification ==="
+              echo "Built with glibc $(ldd --version | head -1 | awk "{print \$NF}")"
+              file package/bin/amiberry
+              ls -la package/lib/ 2>/dev/null || echo "No libraries bundled"
+              
+              # Create versioned filename
+              if [ "${{ github.ref_type }}" = "tag" ]; then
+                FILENAME="amiberry-${{ github.ref_name }}-linux-${{ matrix.name }}.tar.gz"
+              else
+                FILENAME="amiberry-${{ github.sha }}-linux-${{ matrix.name }}.tar.gz"
+              fi
+              
+              tar -czf "$FILENAME" -C package .
+            '
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: amiberry-linux-${{ matrix.name }}
+          path: amiberry-*-linux-${{ matrix.name }}.tar.gz
