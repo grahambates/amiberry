@@ -434,6 +434,120 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: "amiberry-*.zip"
 
+  build-alpine-multiarch:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64, arm/v7]
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            name: x86_64
+          - arch: arm64
+            platform: linux/arm64
+            name: aarch64
+          - arch: arm/v7
+            platform: linux/arm/v7
+            name: armv7l
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build in Alpine container
+        run: |
+          docker run --rm \
+            --platform ${{ matrix.platform }} \
+            -v $PWD:/workspace \
+            -w /workspace \
+            alpine:latest \
+            sh -c '
+              set -e
+              
+              echo "=== Installing build tools ==="
+              apk update
+              apk add --no-cache \
+                build-base \
+                cmake \
+                ninja \
+                git \
+                linux-headers \
+                file \
+                binutils
+              
+              echo "=== Installing core media libraries ==="
+              apk add --no-cache \
+                flac-dev \
+                libpng-dev \
+                sdl2-dev \
+                sdl2_ttf-dev \
+                sdl2_image-dev \
+                alsa-lib-dev \
+                mpg123-dev \
+                zstd-dev
+              
+              echo "=== Applying musl compatibility fixes ==="
+              cd /workspace
+              
+              # Fix ucontext_t issue
+              if [ -f src/jit/x86/exception_handler.cpp ]; then
+                echo "Fixing ucontext_t in exception_handler.cpp"
+                cp src/jit/x86/exception_handler.cpp src/jit/x86/exception_handler.cpp.bak
+                sed "s/struct ucontext_t/ucontext_t/g" src/jit/x86/exception_handler.cpp.bak > src/jit/x86/exception_handler.cpp
+              fi
+              
+              echo "=== Configuring with musl compatibility flags ==="
+              cmake -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+                -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DCMAKE_CXX_FLAGS="-D_GNU_SOURCE -Dfseeko64=fseeko -Dftello64=ftello -D_LARGEFILE64_SOURCE" \
+                -DCMAKE_C_FLAGS="-D_GNU_SOURCE -Dfseeko64=fseeko -Dftello64=ftello -D_LARGEFILE64_SOURCE" \
+                -DUSE_LIBSERIALPORT=OFF \
+                -DUSE_LIBENET=OFF \
+                -DUSE_PORTMIDI=OFF \
+                -DUSE_LIBMPEG2=OFF \
+                -DUSE_UAENET_PCAP=OFF \
+                || { echo "CMake configuration failed"; exit 1; }
+              
+              echo "=== Building Amiberry ==="
+              cmake --build build -j$(nproc) || { echo "Build failed"; exit 1; }
+              
+              echo "=== Post-build processing ==="
+              strip build/amiberry
+              file build/amiberry
+              ldd build/amiberry || echo "Static binary confirmed"
+              
+              echo "=== Packaging ==="
+              mkdir -p package/bin
+              cp build/amiberry package/bin/
+              
+              # Copy data files if they exist
+              if [ -d data ]; then cp -r data/ package/; fi
+              if [ -d kickstarts ]; then cp -r kickstarts/ package/; fi
+              if [ -d conf ]; then cp -r conf/ package/; fi
+              if [ -d whdboot ]; then cp -r whdboot/ package/; fi
+              
+              tar -czf amiberry-portable-${{ matrix.name }}.tar.gz -C package .
+              echo "=== Build completed successfully ==="
+              
+              # Show what we built
+              echo "=== Binary info ==="
+              ls -lh package/bin/amiberry
+              file package/bin/amiberry
+            '
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amiberry-alpine-${{ matrix.name }}
+          path: amiberry-portable-${{ matrix.name }}.tar.gz
+
   create-release:
     needs:
       [
