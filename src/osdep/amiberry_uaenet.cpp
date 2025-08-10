@@ -10,6 +10,8 @@
 #include "sysdeps.h"
 #include "ethernet.h"
 
+static int ethernet_paused;
+
 #ifdef WITH_UAENET_PCAP
 #include <pcap.h>
 
@@ -58,7 +60,6 @@ struct uaenet_data {
 
 int log_ethernet;
 static int enumerated;
-static int ethernet_paused;
 static struct uaenet_data **uaenet_data;
 static int uaenet_count;
 static uae_sem_t queue_available;
