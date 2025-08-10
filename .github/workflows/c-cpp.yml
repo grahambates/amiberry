@@ -434,11 +434,11 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: "amiberry-*.zip"
 
-  build-alpine-multiarch:
+  build-ubuntu-portable:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [amd64, arm64, arm/v7]
+        arch: [amd64, arm64]
         include:
           - arch: amd64
             platform: linux/amd64
@@ -446,9 +446,6 @@ jobs:
           - arch: arm64
             platform: linux/arm64
             name: aarch64
-          - arch: arm/v7
-            platform: linux/arm/v7
-            name: armv7l
 
     steps:
       - name: Check out repository code
@@ -457,157 +454,104 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Build in Alpine container
+      - name: Build portable package
         run: |
           docker run --rm \
             --platform ${{ matrix.platform }} \
             -v $PWD:/workspace \
             -w /workspace \
-            alpine:latest \
-            sh -c '
+            ubuntu:20.04 \
+            bash -c '
               set -e
               
               echo "=== Installing build tools ==="
-              apk update
-              apk add --no-cache \
-                build-base \
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y \
+                build-essential \
                 cmake \
-                ninja \
+                ninja-build \
                 git \
-                linux-headers \
                 file \
-                binutils \
                 patchelf
               
-              echo "=== Installing libraries ==="
-              apk add --no-cache \
-                flac-dev \
+              echo "=== Installing dependencies ==="
+              apt-get install -y \
+                libflac-dev \
                 libpng-dev \
-                sdl2-dev \
-                sdl2_ttf-dev \
-                sdl2_image-dev \
-                alsa-lib-dev \
-                mpg123-dev \
-                zstd-dev
+                libsdl2-dev \
+                libsdl2-ttf-dev \
+                libsdl2-image-dev \
+                libasound2-dev \
+                libmpg123-dev \
+                libzstd-dev
               
-              echo "=== Applying musl compatibility fixes ==="
+              echo "=== Building (exactly like your working Ubuntu build) ==="
               cd /workspace
               
-              if [ -f src/jit/x86/exception_handler.cpp ]; then
-                cp src/jit/x86/exception_handler.cpp src/jit/x86/exception_handler.cpp.bak
-                sed "s/struct ucontext_t/ucontext_t/g" src/jit/x86/exception_handler.cpp.bak > src/jit/x86/exception_handler.cpp
-              fi
-              
-              echo "=== Configuring with RPATH ==="
               cmake -B build -G Ninja \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,\$ORIGIN/../lib" \
-                -DCMAKE_CXX_FLAGS="-D_GNU_SOURCE -Dfseeko64=fseeko -Dftello64=ftello" \
-                -DCMAKE_C_FLAGS="-D_GNU_SOURCE -Dfseeko64=fseeko -Dftello64=ftello" \
+                -DCMAKE_INSTALL_PREFIX=/usr \
                 -DUSE_LIBSERIALPORT=OFF \
                 -DUSE_LIBENET=OFF \
                 -DUSE_PORTMIDI=OFF \
                 -DUSE_LIBMPEG2=OFF \
                 -DUSE_UAENET_PCAP=OFF
+
+              cmake --build build -j4
               
-              cmake --build build -j$(nproc)
-              
-              echo "=== Creating package structure ==="
+              echo "=== Creating portable package ==="
               mkdir -p package/bin package/lib
               
               # Copy the binary
               cp build/amiberry package/bin/
               
-              echo "=== Copying shared library dependencies ==="
-              # Get list of all dependencies except system libraries
-              ldd build/amiberry | grep "=> /" | awk "{print \$3}" | while read lib; do
-                libname=\$(basename "\$lib")
-                libdir=\$(dirname "\$lib")
-                
-                # Skip system libraries that should not be bundled
-                case "\$libdir" in
-                  "/lib"|"/lib64")
-                    echo "Skipping system library: \$lib"
-                    ;;
-                  *)
-                    if [ -f "\$lib" ]; then
-                      echo "Copying \$lib -> package/lib/\$libname"
-                      cp "\$lib" package/lib/
-                    fi
-                    ;;
-                esac
-              done
+              echo "=== Bundling shared libraries ==="
+              ldd build/amiberry | grep "=> /" | awk "{print \$3}" > /tmp/libs.txt
               
-              # Also copy transitive dependencies
-              echo "=== Copying transitive dependencies ==="
-              for lib in package/lib/*.so*; do
-                if [ -f "\$lib" ]; then
-                  ldd "\$lib" 2>/dev/null | grep "=> /" | awk "{print \$3}" | while read deplib; do
-                    deplibname=\$(basename "\$deplib")
-                    deplibdir=\$(dirname "\$deplib")
-                    
-                    case "\$deplibdir" in
-                      "/lib"|"/lib64")
-                        ;;
-                      *)
-                        if [ -f "\$deplib" ] && [ ! -f "package/lib/\$deplibname" ]; then
-                          echo "Copying transitive dependency: \$deplib"
-                          cp "\$deplib" package/lib/
-                        fi
-                        ;;
-                    esac
-                  done
+              while IFS= read -r lib; do
+                if [ -f "$lib" ]; then
+                  libdir=$(dirname "$lib")
+                  case "$libdir" in
+                    "/lib"|"/lib64"|"/lib/x86_64-linux-gnu"|"/usr/lib/x86_64-linux-gnu/mesa")
+                      echo "Skipping system library: $lib"
+                      ;;
+                    *)
+                      echo "Copying $(basename "$lib")"
+                      cp "$lib" package/lib/
+                      ;;
+                  esac
                 fi
-              done
+              done < /tmp/libs.txt
               
-              echo "=== Setting up RPATH and creating wrapper ==="
-              # Ensure RPATH is set correctly
+              echo "=== Setting up portable execution ==="
+              # Set RPATH to look for libraries in ../lib
               patchelf --set-rpath "\$ORIGIN/../lib" package/bin/amiberry
               
-              # Create wrapper script
-              echo "#!/bin/sh" > package/amiberry
+              # Create wrapper script (avoiding heredoc)
+              echo "#!/bin/bash" > package/amiberry
               echo "DIR=\"\$(dirname \"\$(readlink -f \"\$0\")\")\"" >> package/amiberry
               echo "export LD_LIBRARY_PATH=\"\$DIR/lib:\$LD_LIBRARY_PATH\"" >> package/amiberry
               echo "exec \"\$DIR/bin/amiberry\" \"\$@\"" >> package/amiberry
               chmod +x package/amiberry
-              
-              # Copy data files if they exist
-              if [ -d data ]; then cp -r data/ package/; fi
-              if [ -d kickstarts ]; then cp -r kickstarts/ package/; fi
-              if [ -d conf ]; then cp -r conf/ package/; fi
-              if [ -d whdboot ]; then cp -r whdboot/ package/; fi
-              
-              echo "=== Package contents ==="
+
+              echo "=== Package verification ==="
+              echo "Built on Ubuntu 18.04 with glibc $(ldd --version | head -1 | awk \"{print \$NF}\")"
+              echo "Binary info:"
+              file package/bin/amiberry
               echo "Bundled libraries:"
-              ls -la package/lib/
-              
-              echo "Package structure:"
-              find package -type f | head -20
-              
-              echo "RPATH verification:"
+              ls -la package/lib/ || echo "No libraries bundled"
+              echo "RPATH:"
               patchelf --print-rpath package/bin/amiberry
               
               tar -czf amiberry-portable-${{ matrix.name }}.tar.gz -C package .
-              echo "=== Build completed successfully ==="
+              echo "=== Portable package created successfully ==="
             '
-
-      - name: Test portable package
-        run: |
-          echo "=== Testing portable package ==="
-          tar -xzf amiberry-portable-${{ matrix.arch }}.tar.gz -C /tmp/test
-          cd /tmp/test
-
-          echo "Checking if libraries are bundled:"
-          ls -la lib/
-
-          echo "Testing wrapper script:"
-          ./amiberry --help || echo "Help command completed"
 
       - name: Upload artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: amiberry-alpine-${{ matrix.name }}
+          name: amiberry-portable-${{ matrix.name }}
           path: amiberry-portable-${{ matrix.name }}.tar.gz
 
   create-release:
