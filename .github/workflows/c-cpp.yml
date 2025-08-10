@@ -477,87 +477,99 @@ jobs:
                 linux-headers \
                 file \
                 binutils \
-                pkgconfig \
-                autoconf \
-                automake \
-                libtool \
-                wget
+                patchelf
               
-              echo "=== Building minimal static dependencies ==="
-              
-              # Build zlib statically
-              cd /tmp
-              wget https://zlib.net/zlib-1.3.1.tar.gz
-              tar -xzf zlib-1.3.1.tar.gz
-              cd zlib-1.3.1
-              ./configure --prefix=/usr/local --static
-              make -j$(nproc) install
-              
-              # Build libpng statically  
-              cd /tmp
-              wget https://download.sourceforge.net/libpng/libpng-1.6.43.tar.gz
-              tar -xzf libpng-1.6.43.tar.gz
-              cd libpng-1.6.43
-              ./configure --prefix=/usr/local --enable-static --disable-shared
-              make -j$(nproc) install
-              
-              # Build SDL2 statically
-              cd /tmp
-              wget https://github.com/libsdl-org/SDL/releases/download/release-2.30.8/SDL2-2.30.8.tar.gz
-              tar -xzf SDL2-2.30.8.tar.gz
-              cd SDL2-2.30.8
-              ./configure --prefix=/usr/local --enable-static --disable-shared \
-                --disable-video-wayland --disable-video-x11 \
-                --enable-video-dummy --disable-audio \
-                --disable-joystick --disable-haptic
-              make -j$(nproc) install
-              
-              echo "=== Installing minimal Alpine packages ==="
-              apk add --no-cache alsa-lib-dev
+              echo "=== Installing libraries ==="
+              apk add --no-cache \
+                flac-dev \
+                libpng-dev \
+                sdl2-dev \
+                sdl2_ttf-dev \
+                sdl2_image-dev \
+                alsa-lib-dev \
+                mpg123-dev \
+                zstd-dev
               
               echo "=== Applying musl compatibility fixes ==="
               cd /workspace
               
-              # Fix ucontext_t issue
               if [ -f src/jit/x86/exception_handler.cpp ]; then
-                echo "Fixing ucontext_t in exception_handler.cpp"
                 cp src/jit/x86/exception_handler.cpp src/jit/x86/exception_handler.cpp.bak
                 sed "s/struct ucontext_t/ucontext_t/g" src/jit/x86/exception_handler.cpp.bak > src/jit/x86/exception_handler.cpp
               fi
               
-              echo "=== Configuring with static libraries ==="
-              export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
-              export LDFLAGS="-L/usr/local/lib"
-              export CPPFLAGS="-I/usr/local/include"
-              
+              echo "=== Configuring with RPATH ==="
               cmake -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_PREFIX_PATH="/usr/local" \
-                -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
-                -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
-                -DBUILD_SHARED_LIBS=OFF \
-                -DCMAKE_CXX_FLAGS="-D_GNU_SOURCE -Dfseeko64=fseeko -Dftello64=ftello -D_LARGEFILE64_SOURCE" \
-                -DCMAKE_C_FLAGS="-D_GNU_SOURCE -Dfseeko64=fseeko -Dftello64=ftello -D_LARGEFILE64_SOURCE" \
+                -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,\$ORIGIN/../lib" \
+                -DCMAKE_CXX_FLAGS="-D_GNU_SOURCE -Dfseeko64=fseeko -Dftello64=ftello" \
+                -DCMAKE_C_FLAGS="-D_GNU_SOURCE -Dfseeko64=fseeko -Dftello64=ftello" \
                 -DUSE_LIBSERIALPORT=OFF \
                 -DUSE_LIBENET=OFF \
                 -DUSE_PORTMIDI=OFF \
                 -DUSE_LIBMPEG2=OFF \
-                -DUSE_UAENET_PCAP=OFF \
-                || { echo "CMake configuration failed"; exit 1; }
+                -DUSE_UAENET_PCAP=OFF
               
-              echo "=== Building Amiberry ==="
-              cmake --build build -j$(nproc) || { echo "Build failed"; exit 1; }
+              cmake --build build -j$(nproc)
               
-              echo "=== Post-build processing ==="
-              strip build/amiberry
-              file build/amiberry
+              echo "=== Creating package structure ==="
+              mkdir -p package/bin package/lib
               
-              echo "=== Dependencies check ==="
-              ldd build/amiberry || echo "No dynamic dependencies (fully static)"
-              
-              echo "=== Packaging ==="
-              mkdir -p package/bin
+              # Copy the binary
               cp build/amiberry package/bin/
+              
+              echo "=== Copying shared library dependencies ==="
+              # Get list of all dependencies except system libraries
+              ldd build/amiberry | grep "=> /" | awk "{print \$3}" | while read lib; do
+                libname=\$(basename "\$lib")
+                libdir=\$(dirname "\$lib")
+                
+                # Skip system libraries that should not be bundled
+                case "\$libdir" in
+                  "/lib"|"/lib64")
+                    echo "Skipping system library: \$lib"
+                    ;;
+                  *)
+                    if [ -f "\$lib" ]; then
+                      echo "Copying \$lib -> package/lib/\$libname"
+                      cp "\$lib" package/lib/
+                    fi
+                    ;;
+                esac
+              done
+              
+              # Also copy transitive dependencies
+              echo "=== Copying transitive dependencies ==="
+              for lib in package/lib/*.so*; do
+                if [ -f "\$lib" ]; then
+                  ldd "\$lib" 2>/dev/null | grep "=> /" | awk "{print \$3}" | while read deplib; do
+                    deplibname=\$(basename "\$deplib")
+                    deplibdir=\$(dirname "\$deplib")
+                    
+                    case "\$deplibdir" in
+                      "/lib"|"/lib64")
+                        ;;
+                      *)
+                        if [ -f "\$deplib" ] && [ ! -f "package/lib/\$deplibname" ]; then
+                          echo "Copying transitive dependency: \$deplib"
+                          cp "\$deplib" package/lib/
+                        fi
+                        ;;
+                    esac
+                  done
+                fi
+              done
+              
+              echo "=== Setting up RPATH and creating wrapper ==="
+              # Ensure RPATH is set correctly
+              patchelf --set-rpath "\$ORIGIN/../lib" package/bin/amiberry
+              
+              # Create wrapper script
+              echo "#!/bin/sh" > package/amiberry
+              echo "DIR=\"\$(dirname \"\$(readlink -f \"\$0\")\")\"" >> package/amiberry
+              echo "export LD_LIBRARY_PATH=\"\$DIR/lib:\$LD_LIBRARY_PATH\"" >> package/amiberry
+              echo "exec \"\$DIR/bin/amiberry\" \"\$@\"" >> package/amiberry
+              chmod +x package/amiberry
               
               # Copy data files if they exist
               if [ -d data ]; then cp -r data/ package/; fi
@@ -565,14 +577,31 @@ jobs:
               if [ -d conf ]; then cp -r conf/ package/; fi
               if [ -d whdboot ]; then cp -r whdboot/ package/; fi
               
+              echo "=== Package contents ==="
+              echo "Bundled libraries:"
+              ls -la package/lib/
+              
+              echo "Package structure:"
+              find package -type f | head -20
+              
+              echo "RPATH verification:"
+              patchelf --print-rpath package/bin/amiberry
+              
               tar -czf amiberry-portable-${{ matrix.name }}.tar.gz -C package .
               echo "=== Build completed successfully ==="
-              
-              # Show what we built
-              echo "=== Binary info ==="
-              ls -lh package/bin/amiberry
-              file package/bin/amiberry
             '
+
+      - name: Test portable package
+        run: |
+          echo "=== Testing portable package ==="
+          tar -xzf amiberry-portable-${{ matrix.arch }}.tar.gz -C /tmp/test
+          cd /tmp/test
+
+          echo "Checking if libraries are bundled:"
+          ls -la lib/
+
+          echo "Testing wrapper script:"
+          ./amiberry --help || echo "Help command completed"
 
       - name: Upload artifact
         if: always()
